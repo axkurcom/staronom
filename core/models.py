@@ -55,3 +55,33 @@ class AnalysisResult:
     streak_nonzero: Streak
     streak_zero: Streak
     weekly: List[WeekStat]
+
+
+@dataclass(frozen=True)
+class ForecastRow:
+    forecast_date: dt.date
+    yhat_p50: float
+    yhat_p80_lo: float
+    yhat_p80_hi: float
+    yhat_p95_lo: float
+    yhat_p95_hi: float
+    drop_prob: Optional[float] = None
+    drop_alert: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class ForecastResult:
+    repo: str
+    generated_at_utc: dt.datetime
+    horizon_days: int
+    quantiles: List[float]
+    rows: List[ForecastRow]
+    model_weights: Dict[str, float]
+    diagnostics: Dict[str, float]
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    windows: int
+    horizon_days: int
+    metrics: Dict[str, float]

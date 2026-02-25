@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.models import AnalysisResult
+from core.models import AnalysisResult, BacktestResult, ForecastResult
 
 
 def _streak_text(label: str, analysis: AnalysisResult, streak: tuple[int, int, int]) -> Optional[str]:
@@ -81,3 +81,48 @@ def print_summary(repo: str, analysis: AnalysisResult) -> None:
     print("Weekly averages (avg stars/day per ISO week) - last 10 weeks:")
     for (year, week), avg_w, total_w in analysis.weekly[-10:]:
         print(f"  {year}-W{week:02d}: avg/day={avg_w:.2f}  total={total_w}")
+
+
+def print_forecast_summary(forecast: ForecastResult) -> None:
+    if not forecast.rows:
+        print()
+        print("Forecast: no rows generated")
+        return
+
+    first = forecast.rows[0]
+    last = forecast.rows[-1]
+    print()
+    print(
+        f"Forecast ({forecast.horizon_days}d): "
+        f"{first.forecast_date} .. {last.forecast_date}"
+    )
+    print(
+        f"  day+1 median={first.yhat_p50:.2f} "
+        f"p80=[{first.yhat_p80_lo:.2f}, {first.yhat_p80_hi:.2f}] "
+        f"p95=[{first.yhat_p95_lo:.2f}, {first.yhat_p95_hi:.2f}]"
+    )
+    print(
+        f"  day+{forecast.horizon_days} median={last.yhat_p50:.2f} "
+        f"p80=[{last.yhat_p80_lo:.2f}, {last.yhat_p80_hi:.2f}] "
+        f"p95=[{last.yhat_p95_lo:.2f}, {last.yhat_p95_hi:.2f}]"
+    )
+    if first.drop_prob is not None:
+        print(
+            f"  day+1 drop_prob={first.drop_prob:.3f} "
+            f"drop_alert={'yes' if first.drop_alert else 'no'}"
+        )
+    print(
+        "  weights: "
+        + ", ".join(f"{k}={v:.3f}" for k, v in sorted(forecast.model_weights.items()))
+    )
+    print(
+        "  diagnostics: "
+        + ", ".join(f"{k}={v:.4f}" for k, v in sorted(forecast.diagnostics.items()))
+    )
+
+
+def print_backtest_summary(backtest: BacktestResult) -> None:
+    print()
+    print(f"Backtest windows: {backtest.windows}")
+    for key in sorted(backtest.metrics.keys()):
+        print(f"  {key}: {backtest.metrics[key]:.6f}")
