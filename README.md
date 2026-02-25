@@ -1,2 +1,2 @@
 # Staronom
-Staronom is a little tool for high-end analysing of Github Stars!
+Staronom is a little tool for high-end analysis of Github Stars!
