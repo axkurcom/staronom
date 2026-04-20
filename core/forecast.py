@@ -47,6 +47,15 @@ def _normalize_interval_levels(levels: Sequence[float]) -> List[float]:
     return sorted(set(normalized))
 
 
+def _validate_history_counts(history_counts: Sequence[int]) -> None:
+    for idx, count in enumerate(history_counts):
+        value = float(count)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"history_counts must contain finite non-negative values; got {count!r} at index {idx}"
+            )
+
+
 def _moving_average(values: Sequence[float], window: int) -> List[float]:
     if window <= 0:
         raise ValueError("window must be > 0")
@@ -205,7 +214,8 @@ def _fit_dynamic_nb(
             xs = [float(row.get(key, 0.0)) for row in event_rows]
             scale = statistics.mean(xs) if xs else 0.0
             scale = max(scale, 1.0)
-            centered_x = [x - statistics.mean(xs) for x in xs]
+            mean_x = statistics.mean(xs) if xs else 0.0
+            centered_x = [x - mean_x for x in xs]
             var_x = sum(v * v for v in centered_x)
             if var_x < 1e-9:
                 event_coef[key] = 0.0
@@ -541,6 +551,7 @@ def generate_forecast(
         raise ValueError("history_days and history_counts must not be empty")
     if len(history_days) != len(history_counts):
         raise ValueError("history_days and history_counts length mismatch")
+    _validate_history_counts(history_counts)
 
     levels = list(interval_levels or [0.5, 0.8, 0.95])
     if 0.5 not in levels:
