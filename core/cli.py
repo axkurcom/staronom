@@ -11,7 +11,12 @@ import requests
 from core.analytics import analyze_series, build_daily_series
 from core.backtest import run_backtest
 from core.date_utils import utc_midnight_ts
-from core.forecast import generate_forecast, parse_interval_levels, save_forecast
+from core.forecast import (
+    MAX_HORIZON_DAYS,
+    generate_forecast,
+    parse_interval_levels,
+    save_forecast,
+)
 from core.github_client import fetch_event_signals, fetch_stars
 from core.graphs import graph_advanced, graph_total_only
 from core.models import RepoRef
@@ -43,6 +48,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.horizon <= 0:
         print("--horizon must be > 0", file=sys.stderr)
+        return 2
+    if args.horizon > MAX_HORIZON_DAYS:
+        print(f"--horizon must be <= {MAX_HORIZON_DAYS}", file=sys.stderr)
         return 2
     try:
         interval_levels = parse_interval_levels(args.quantiles)

@@ -24,10 +24,27 @@ from core.models import ForecastResult, ForecastRow
 DEFAULT_N_SIMS = 1200
 DEFAULT_WEIGHT_EVAL_POINTS = 30
 DEFAULT_WEIGHT_SIMULATIONS = 140
+MAX_HORIZON_DAYS = 3650
+_TREND_DECAY_TAU = 90.0
+_MU_MIN = 0.01
+_MU_MAX = 1e7
 
 
 def _clip(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
+
+
+def _validate_probability(value: float, *, name: str) -> float:
+    if not math.isfinite(value) or value <= 0.0 or value >= 1.0:
+        raise ValueError(f"{name} must be finite and in range (0, 1): {value!r}")
+    return float(value)
+
+
+def _normalize_interval_levels(levels: Sequence[float]) -> List[float]:
+    normalized = [_validate_probability(level, name="quantile") for level in levels]
+    if not normalized:
+        raise ValueError("quantiles list is empty")
+    return sorted(set(normalized))
 
 
 def _moving_average(values: Sequence[float], window: int) -> List[float]:
@@ -218,17 +235,21 @@ def _dynamic_nb_mean(
     prev: float,
     event_row: Dict[str, float],
 ) -> float:
-    base = params.level * math.exp(params.trend * step)
-    base *= params.weekday_factors[day.weekday()]
-
     event_effect = 0.0
     for key, coef in params.event_coef.items():
         scale = params.event_scale.get(key, 1.0)
         event_effect += coef * (event_row.get(key, 0.0) / scale)
-    base *= math.exp(event_effect)
 
-    mu = (1.0 - params.ar) * base + params.ar * prev
-    return max(mu, 0.01)
+    step_float = max(float(step), 0.0)
+    trend_effect = params.trend * _TREND_DECAY_TAU * (1.0 - math.exp(-step_float / _TREND_DECAY_TAU))
+    weekday_factor = max(params.weekday_factors[day.weekday()], 1e-9)
+    log_base = math.log(max(params.level, 1e-9)) + math.log(weekday_factor) + trend_effect + event_effect
+    log_base = _clip(log_base, math.log(_MU_MIN), math.log(_MU_MAX))
+    base = math.exp(log_base)
+
+    safe_prev = prev if math.isfinite(prev) else base
+    mu = (1.0 - params.ar) * base + params.ar * safe_prev
+    return _clip(mu, _MU_MIN, _MU_MAX)
 
 
 def _simulate_dynamic_nb(
@@ -514,6 +535,8 @@ def generate_forecast(
 ) -> ForecastResult:
     if horizon_days <= 0:
         raise ValueError("horizon_days must be > 0")
+    if horizon_days > MAX_HORIZON_DAYS:
+        raise ValueError(f"horizon_days must be <= {MAX_HORIZON_DAYS}")
     if not history_days or not history_counts:
         raise ValueError("history_days and history_counts must not be empty")
     if len(history_days) != len(history_counts):
@@ -526,7 +549,7 @@ def generate_forecast(
         levels.append(0.8)
     if 0.95 not in levels:
         levels.append(0.95)
-    levels = sorted(set(levels))
+    levels = _normalize_interval_levels(levels)
 
     signals = event_signals or empty_event_signals()
     history_event_rows = build_event_rows(history_days, signals)
@@ -716,10 +739,5 @@ def parse_interval_levels(raw: str) -> List[float]:
         token = token.strip()
         if not token:
             continue
-        level = float(token)
-        if level <= 0 or level >= 1:
-            raise ValueError("quantiles must be in range (0, 1)")
-        values.append(level)
-    if not values:
-        raise ValueError("quantiles list is empty")
-    return sorted(set(values))
+        values.append(float(token))
+    return _normalize_interval_levels(values)
