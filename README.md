@@ -9,4 +9,6 @@ python3 staronom.py --repo telemt/telemt
 ```
 
 Example of Advanced analystics on [telemt](https://github.com/telemt/telemt) repo!
-<img width="2517" height="1116" alt="stars_advanced" src="https://github.com/user-attachments/assets/29775a33-72fd-43ac-ba98-ed8c32462a8f" />
+
+<img width="2517" height="1116" alt="stars_advanced" src="https://github.com/user-attachments/assets/8010fe0b-1761-4d91-84da-4fbfb86a0434" />
+
