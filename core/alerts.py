@@ -4,6 +4,12 @@ import math
 import statistics
 from typing import Dict, List, Sequence, Tuple
 
+_DROP_BASELINE_WINDOW_DAYS = 28
+_DROP_THRESHOLD_RATIO = 0.7
+_DROP_BASELINE_MIN = 1.0
+_CUSUM_BASELINE_PROB = 0.1
+_CUSUM_BASELINE_LOGIT = math.log(_CUSUM_BASELINE_PROB / (1.0 - _CUSUM_BASELINE_PROB))
+
 
 def _sigmoid(value: float) -> float:
     if value >= 0:
@@ -69,7 +75,7 @@ def _markov_drop_probabilities(history_counts: Sequence[int], horizon: int) -> L
 
 def _cusum_drop_probability(history_counts: Sequence[int]) -> float:
     if len(history_counts) < 14:
-        return 0.1
+        return _CUSUM_BASELINE_PROB
 
     ma7 = _moving_average([float(x) for x in history_counts], 7)
     residuals = [history_counts[i] - ma7[i] for i in range(len(history_counts))]
@@ -83,7 +89,20 @@ def _cusum_drop_probability(history_counts: Sequence[int]) -> float:
         stat = min(0.0, stat + residual + drift)
 
     # Strongly negative one-sided CUSUM means a likely slowdown regime.
-    return _sigmoid((-stat) / (3.0 * residual_std))
+    return _sigmoid(((-stat) / (3.0 * residual_std)) + _CUSUM_BASELINE_LOGIT)
+
+
+def drop_reference_baseline(history_counts: Sequence[int]) -> float:
+    baseline_window = (
+        history_counts[-_DROP_BASELINE_WINDOW_DAYS:]
+        if len(history_counts) >= _DROP_BASELINE_WINDOW_DAYS
+        else history_counts
+    )
+    return statistics.mean(baseline_window) if baseline_window else 0.0
+
+
+def is_drop_event(actual: float, baseline: float) -> bool:
+    return baseline >= _DROP_BASELINE_MIN and actual < _DROP_THRESHOLD_RATIO * baseline
 
 
 def compute_drop_alerts(
@@ -96,8 +115,7 @@ def compute_drop_alerts(
     markov_probs = _markov_drop_probabilities(history_counts, horizon)
     cusum_prob = _cusum_drop_probability(history_counts)
 
-    baseline_window = history_counts[-28:] if len(history_counts) >= 28 else history_counts
-    baseline = statistics.mean(baseline_window) if baseline_window else 0.0
+    baseline = drop_reference_baseline(history_counts)
     scale_window = history_counts[-56:] if len(history_counts) >= 56 else history_counts
     scale = statistics.pstdev(scale_window) if len(scale_window) > 1 else max(baseline, 1.0)
     scale = max(scale, 1.0)

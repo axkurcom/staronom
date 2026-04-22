@@ -48,11 +48,36 @@ def _normalize_interval_levels(levels: Sequence[float]) -> List[float]:
 
 
 def _validate_history_counts(history_counts: Sequence[int]) -> None:
+    def _value_for_error(value: object) -> str:
+        if isinstance(value, int):
+            sign = "-" if value < 0 else ""
+            return f"{sign}<int bits={abs(value).bit_length()}>"
+        try:
+            rendered = repr(value)
+        except Exception:
+            return f"<unreprable {type(value).__name__}>"
+        if len(rendered) > 120:
+            return rendered[:117] + "..."
+        return rendered
+
     for idx, count in enumerate(history_counts):
-        value = float(count)
+        count_text = _value_for_error(count)
+        try:
+            value = float(count)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(
+                "history_counts must contain finite non-negative whole-number values; "
+                f"got {count_text} at index {idx}"
+            ) from None
         if not math.isfinite(value) or value < 0.0:
             raise ValueError(
-                f"history_counts must contain finite non-negative values; got {count!r} at index {idx}"
+                "history_counts must contain finite non-negative whole-number values; "
+                f"got {count_text} at index {idx}"
+            )
+        if not value.is_integer():
+            raise ValueError(
+                "history_counts must contain finite non-negative whole-number values; "
+                f"got {count_text} at index {idx}"
             )
 
 

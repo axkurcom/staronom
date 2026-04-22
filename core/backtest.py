@@ -3,6 +3,7 @@ from __future__ import annotations
 import statistics
 from typing import List, Optional, Sequence
 
+from core.alerts import drop_reference_baseline, is_drop_event
 from core.features import EventSignals
 from core.forecast import generate_forecast
 from core.models import BacktestResult
@@ -93,10 +94,10 @@ def run_backtest(
             [abs(train_counts[i] - train_counts[i - 1]) for i in range(1, len(train_counts))]
         )
         denom = max(denom, 1.0)
+        drop_baseline = drop_reference_baseline(train_counts)
 
         abs_err_sum = 0.0
-        context = list(train_counts)
-        for i, (row, y) in enumerate(zip(forecast.rows, actual)):
+        for row, y in zip(forecast.rows, actual):
             y_float = float(y)
 
             pinball_sum += _pinball_loss(y_float, row.yhat_p50, 0.5)
@@ -112,9 +113,7 @@ def run_backtest(
 
             abs_err_sum += abs(y_float - row.yhat_p50)
 
-            baseline_window = context[-28:] if len(context) >= 28 else context
-            baseline = statistics.mean(baseline_window) if baseline_window else 0.0
-            is_drop = baseline >= 1.0 and y_float < 0.7 * baseline
+            is_drop = is_drop_event(y_float, drop_baseline)
             predicted_drop = bool(row.drop_alert)
             if predicted_drop and is_drop:
                 tp += 1
@@ -122,11 +121,10 @@ def run_backtest(
                 fp += 1
             elif (not predicted_drop) and is_drop:
                 fn += 1
-            context.append(y)
 
         mase_values.append((abs_err_sum / horizon_days) / denom)
 
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     pinball_mean = pinball_sum / pinball_n if pinball_n else 0.0
 
