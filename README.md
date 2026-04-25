@@ -3,6 +3,7 @@ Staronom is a little tool for high-end analysis of Github Stars!
 
 Try it right now, on Debian:
 ```bash
+apt install -y python3 apt
 git clone https://github.com/axkurcom/staronom
 cd staronom
 python3 staronom.py --repo telemt/telemt
