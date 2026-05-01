@@ -41,9 +41,9 @@ def _validate_probability(value: float, *, name: str) -> float:
 
 
 def _normalize_interval_levels(levels: Sequence[float]) -> List[float]:
-    normalized = [_validate_probability(level, name="quantile") for level in levels]
+    normalized = [_validate_probability(level, name="interval") for level in levels]
     if not normalized:
-        raise ValueError("quantiles list is empty")
+        raise ValueError("interval levels list is empty")
     return sorted(set(normalized))
 
 
@@ -769,11 +769,12 @@ def save_forecast(result: ForecastResult, path: str) -> None:
 
 def parse_interval_levels(raw: str) -> List[float]:
     if not raw:
-        return [0.5, 0.8, 0.95]
+        return [0.8, 0.95]
     values = []
     for token in raw.split(","):
         token = token.strip()
         if not token:
             continue
         values.append(float(token))
+    values = [value for value in values if value != 0.5]
     return _normalize_interval_levels(values)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 from typing import List, Optional, Sequence
 
 from core.alerts import drop_reference_baseline, is_drop_event
@@ -76,6 +77,20 @@ def run_backtest(
         if len(actual) < horizon_days:
             continue
 
+        train_event_signals: Optional[EventSignals] = None
+        if event_signals is not None:
+            cutoff_day = train_days[-1]
+
+            def _truncate(counter: Counter) -> Counter:
+                return Counter({day: value for day, value in counter.items() if day <= cutoff_day})
+
+            train_event_signals = EventSignals(
+                releases=_truncate(event_signals.releases),
+                commits=_truncate(event_signals.commits),
+                issues=_truncate(event_signals.issues),
+                prs=_truncate(event_signals.prs),
+            )
+
         forecast = generate_forecast(
             repo=repo,
             history_days=train_days,
@@ -83,7 +98,7 @@ def run_backtest(
             horizon_days=horizon_days,
             interval_levels=interval_levels,
             with_events=with_events,
-            event_signals=event_signals,
+            event_signals=train_event_signals,
             with_drop_alert=True,
             n_sims=500,
             weight_eval_points=10,

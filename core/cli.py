@@ -36,7 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forecast", action="store_true")
     parser.add_argument("--horizon", type=int, default=30)
     parser.add_argument("--with-events", action="store_true")
-    parser.add_argument("--quantiles", default="0.5,0.8,0.95")
+    parser.add_argument("--intervals", default="0.8,0.95")
+    parser.add_argument("--quantiles", help=argparse.SUPPRESS)
     parser.add_argument("--forecast-out")
     parser.add_argument("--drop-alert", action="store_true")
     parser.add_argument("--backtest", action="store_true")
@@ -53,9 +54,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"--horizon must be <= {MAX_HORIZON_DAYS}", file=sys.stderr)
         return 2
     try:
-        interval_levels = parse_interval_levels(args.quantiles)
+        raw_intervals = args.intervals
+        if args.quantiles:
+            raw_intervals = args.quantiles
+        interval_levels = parse_interval_levels(raw_intervals)
     except ValueError as exc:
-        print(f"Invalid --quantiles: {exc}", file=sys.stderr)
+        print(f"Invalid --intervals: {exc}", file=sys.stderr)
         return 2
 
     os.makedirs(args.out, exist_ok=True)

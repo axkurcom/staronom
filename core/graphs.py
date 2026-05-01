@@ -45,13 +45,11 @@ def graph_advanced(rrd_path: str, out_path: str, start_ts: str, slope: float, r2
         "--font",
         "DEFAULT:14",
         f"DEF:d={rrd_path}:daily:AVERAGE",
-        f"DEF:t={rrd_path}:total:AVERAGE",
         "CDEF:ma7=d,604800,TREND",
         "CDEF:ma28=d,2419200,TREND",
         f"LINE2:d{COLORS['daily']}:daily",
         f"LINE2:ma7{COLORS['ma7']}:MA7",
         f"LINE2:ma28{COLORS['ma28']}:MA28",
-        f"LINE2:t{COLORS['total']}:Total",
         f"COMMENT:Linear slope={slope:.4f} stars/day^2\\n",
         f"COMMENT:R^2={r2:.4f}\\n",
     ]
