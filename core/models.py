@@ -65,6 +65,7 @@ class ForecastRow:
     yhat_p80_hi: float
     yhat_p95_lo: float
     yhat_p95_hi: float
+    intervals: Dict[float, Tuple[float, float]]
     drop_prob: Optional[float] = None
     drop_alert: Optional[bool] = None
 

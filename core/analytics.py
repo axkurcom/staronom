@@ -119,15 +119,19 @@ def longest_streak(values: Sequence[int], predicate: Callable[[int], bool]) -> S
 
 
 def build_daily_series(
-    star_dates: Sequence[dt.date], *, empty_day: Optional[dt.date] = None
+    star_dates: Sequence[dt.date],
+    *,
+    empty_day: Optional[dt.date] = None,
+    end_day: Optional[dt.date] = None,
 ) -> Tuple[List[dt.date], List[int]]:
     daily_counter = collections.Counter(star_dates)
+    final_day = end_day or utc_today()
     if not daily_counter:
-        baseline_day = empty_day or utc_today()
+        baseline_day = empty_day or final_day
         return [baseline_day], [0]
 
     first = min(daily_counter)
-    last = max(daily_counter)
+    last = max(max(daily_counter), final_day)
     days = list(daterange(first, last))
     counts = [daily_counter.get(day, 0) for day in days]
     return days, counts

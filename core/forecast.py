@@ -466,7 +466,10 @@ def _loss_for_model(
         hist_counts = counts[: split + 1]
         hist_events = event_rows[: split + 1]
         next_day = days[split + 1]
-        next_event = event_rows[split + 1]
+        estimated_days, estimated_events = estimate_future_event_rows(hist_days, hist_events, 1)
+        next_event = estimated_events[0] if estimated_events else {}
+        if estimated_days and estimated_days[0] != next_day:
+            next_day = estimated_days[0]
 
         if model_name == "dynamic_nb":
             params = _fit_dynamic_nb(hist_days, hist_counts, hist_events, use_events)
@@ -658,8 +661,13 @@ def generate_forecast(
     for day_index, day in enumerate(future_days):
         day_samples = _collect_day_samples(sim_paths, day_index)
         p50 = _quantile(day_samples, 0.5)
-        p80_lo, p80_hi = _interval(day_samples, 0.8)
-        p95_lo, p95_hi = _interval(day_samples, 0.95)
+        intervals = {
+            level: _interval(day_samples, level)
+            for level in levels
+            if level > 0.5
+        }
+        p80_lo, p80_hi = intervals[0.8]
+        p95_lo, p95_hi = intervals[0.95]
         p50_series.append(p50)
         rows.append(
             ForecastRow(
@@ -669,6 +677,7 @@ def generate_forecast(
                 yhat_p80_hi=p80_hi,
                 yhat_p95_lo=p95_lo,
                 yhat_p95_hi=p95_hi,
+                intervals=intervals,
             )
         )
 
@@ -691,6 +700,7 @@ def generate_forecast(
                     yhat_p80_hi=row.yhat_p80_hi,
                     yhat_p95_lo=row.yhat_p95_lo,
                     yhat_p95_hi=row.yhat_p95_hi,
+                    intervals=row.intervals,
                     drop_prob=prob,
                     drop_alert=alert,
                 )
@@ -714,6 +724,19 @@ def save_forecast(result: ForecastResult, path: str) -> None:
 
     if target.suffix.lower() == ".csv":
         with target.open("w", encoding="utf-8", newline="") as handle:
+            extra_levels = [
+                level
+                for level in result.quantiles
+                if level > 0.5 and level not in (0.8, 0.95)
+            ]
+            extra_columns = [
+                column
+                for level in extra_levels
+                for column in (
+                    f"yhat_p{level:g}_lo",
+                    f"yhat_p{level:g}_hi",
+                )
+            ]
             writer = csv.writer(handle)
             writer.writerow(
                 [
@@ -723,11 +746,17 @@ def save_forecast(result: ForecastResult, path: str) -> None:
                     "yhat_p80_hi",
                     "yhat_p95_lo",
                     "yhat_p95_hi",
+                    *extra_columns,
                     "drop_prob",
                     "drop_alert",
                 ]
             )
             for row in result.rows:
+                extra_values = [
+                    f"{value:.6f}"
+                    for level in extra_levels
+                    for value in row.intervals.get(level, (0.0, 0.0))
+                ]
                 writer.writerow(
                     [
                         row.forecast_date.isoformat(),
@@ -736,6 +765,7 @@ def save_forecast(result: ForecastResult, path: str) -> None:
                         f"{row.yhat_p80_hi:.6f}",
                         f"{row.yhat_p95_lo:.6f}",
                         f"{row.yhat_p95_hi:.6f}",
+                        *extra_values,
                         "" if row.drop_prob is None else f"{row.drop_prob:.6f}",
                         "" if row.drop_alert is None else int(row.drop_alert),
                     ]
@@ -757,6 +787,10 @@ def save_forecast(result: ForecastResult, path: str) -> None:
                 "yhat_p80_hi": row.yhat_p80_hi,
                 "yhat_p95_lo": row.yhat_p95_lo,
                 "yhat_p95_hi": row.yhat_p95_hi,
+                "intervals": {
+                    f"{level:g}": {"lo": lo, "hi": hi}
+                    for level, (lo, hi) in sorted(row.intervals.items())
+                },
                 "drop_prob": row.drop_prob,
                 "drop_alert": row.drop_alert,
             }
