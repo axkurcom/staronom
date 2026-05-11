@@ -466,10 +466,8 @@ def _loss_for_model(
         hist_counts = counts[: split + 1]
         hist_events = event_rows[: split + 1]
         next_day = days[split + 1]
-        estimated_days, estimated_events = estimate_future_event_rows(hist_days, hist_events, 1)
+        _, estimated_events = estimate_future_event_rows(hist_days, hist_events, 1)
         next_event = estimated_events[0] if estimated_events else {}
-        if estimated_days and estimated_days[0] != next_day:
-            next_day = estimated_days[0]
 
         if model_name == "dynamic_nb":
             params = _fit_dynamic_nb(hist_days, hist_counts, hist_events, use_events)
@@ -724,6 +722,9 @@ def save_forecast(result: ForecastResult, path: str) -> None:
 
     if target.suffix.lower() == ".csv":
         with target.open("w", encoding="utf-8", newline="") as handle:
+            def _level_label(level: float) -> str:
+                return f"{level * 100:g}"
+
             extra_levels = [
                 level
                 for level in result.quantiles
@@ -733,8 +734,8 @@ def save_forecast(result: ForecastResult, path: str) -> None:
                 column
                 for level in extra_levels
                 for column in (
-                    f"yhat_p{level:g}_lo",
-                    f"yhat_p{level:g}_hi",
+                    f"yhat_p{_level_label(level)}_lo",
+                    f"yhat_p{_level_label(level)}_hi",
                 )
             ]
             writer = csv.writer(handle)
