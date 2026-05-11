@@ -66,6 +66,8 @@ def run_backtest(
     cov80_hits = 0
     cov95_hits = 0
     cov_n = 0
+    interval_hits = {level: 0 for level in interval_levels if level > 0.5}
+    interval_n = 0
     mase_values: List[float] = []
 
     tp = fp = fn = 0
@@ -116,11 +118,20 @@ def run_backtest(
             y_float = float(y)
 
             pinball_sum += _pinball_loss(y_float, row.yhat_p50, 0.5)
-            pinball_sum += _pinball_loss(y_float, row.yhat_p80_lo, 0.1)
-            pinball_sum += _pinball_loss(y_float, row.yhat_p80_hi, 0.9)
-            pinball_sum += _pinball_loss(y_float, row.yhat_p95_lo, 0.025)
-            pinball_sum += _pinball_loss(y_float, row.yhat_p95_hi, 0.975)
-            pinball_n += 5
+            pinball_n += 1
+            for level in interval_levels:
+                if level <= 0.5:
+                    continue
+                interval = row.intervals.get(level)
+                if interval is None:
+                    continue
+                lo, hi = interval
+                tail = (1.0 - level) / 2.0
+                pinball_sum += _pinball_loss(y_float, lo, tail)
+                pinball_sum += _pinball_loss(y_float, hi, 1.0 - tail)
+                pinball_n += 2
+                interval_hits[level] += int(lo <= y_float <= hi)
+            interval_n += 1
 
             cov80_hits += int(row.yhat_p80_lo <= y_float <= row.yhat_p80_hi)
             cov95_hits += int(row.yhat_p95_lo <= y_float <= row.yhat_p95_hi)
@@ -142,6 +153,11 @@ def run_backtest(
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     pinball_mean = pinball_sum / pinball_n if pinball_n else 0.0
+    coverage_metrics = {
+        f"coverage_{level:g}": (hits / interval_n) if interval_n else 0.0
+        for level, hits in interval_hits.items()
+        if level not in (0.8, 0.95)
+    }
 
     return BacktestResult(
         windows=len(cutoffs),
@@ -153,5 +169,6 @@ def run_backtest(
             "mase": statistics.mean(mase_values) if mase_values else 0.0,
             "drop_precision": precision,
             "drop_recall": recall,
+            **coverage_metrics,
         },
     )
