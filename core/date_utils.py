@@ -24,5 +24,9 @@ def daterange(start: dt.date, end: dt.date) -> Iterator[dt.date]:
         current += dt.timedelta(days=1)
 
 
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(tz=dt.timezone.utc)
+
+
 def utc_today() -> dt.date:
-    return dt.datetime.now(tz=dt.timezone.utc).date()
+    return utc_now().date()

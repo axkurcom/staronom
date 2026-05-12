@@ -10,9 +10,47 @@ from core.date_utils import daterange, utc_today
 from core.models import AnalysisResult, Streak, WeekStat
 
 
-def moving_average(series: Sequence[float], window: int) -> List[Optional[float]]:
+SECONDS_PER_DAY = 24 * 60 * 60
+
+
+def _normalize_utc(now_utc: Optional[dt.datetime]) -> dt.datetime:
+    if now_utc is None:
+        return dt.datetime.now(tz=dt.timezone.utc)
+    if now_utc.tzinfo is None:
+        return now_utc.replace(tzinfo=dt.timezone.utc)
+    return now_utc.astimezone(dt.timezone.utc)
+
+
+def _current_day_fraction(now_utc: Optional[dt.datetime] = None) -> float:
+    now = _normalize_utc(now_utc)
+    midnight = dt.datetime(now.year, now.month, now.day, tzinfo=dt.timezone.utc)
+    elapsed = (now - midnight).total_seconds()
+    return max(0.0, min(elapsed / SECONDS_PER_DAY, 1.0))
+
+
+def _day_exposure_weights(
+    days: Sequence[dt.date], now_utc: Optional[dt.datetime] = None
+) -> List[float]:
+    now = _normalize_utc(now_utc)
+    today = now.date()
+    current_fraction = _current_day_fraction(now)
+    return [current_fraction if day == today else 1.0 for day in days]
+
+
+def _exposure_adjusted_mean(values: Sequence[float], exposures: Sequence[float]) -> float:
+    total_exposure = sum(exposures)
+    if total_exposure <= 0.0:
+        return 0.0
+    return sum(float(value) for value in values) / total_exposure
+
+
+def moving_average(
+    series: Sequence[float], window: int, exposures: Optional[Sequence[float]] = None
+) -> List[Optional[float]]:
     if window <= 0:
         raise ValueError("window must be > 0")
+    if exposures is not None and len(exposures) != len(series):
+        raise ValueError("series and exposures length mismatch")
 
     out: List[Optional[float]] = []
     for i in range(len(series)):
@@ -21,7 +59,12 @@ def moving_average(series: Sequence[float], window: int) -> List[Optional[float]
             continue
 
         sample = series[i - window + 1 : i + 1]
-        out.append(sum(sample) / window)
+        if exposures is None:
+            out.append(sum(sample) / window)
+            continue
+
+        sample_exposures = exposures[i - window + 1 : i + 1]
+        out.append(_exposure_adjusted_mean(sample, sample_exposures))
     return out
 
 
@@ -82,19 +125,29 @@ def percentiles(values: Sequence[int], requested: Sequence[int]) -> Dict[int, in
     return result
 
 
-def weekly_stats(days: Sequence[dt.date], counts: Sequence[int]) -> List[WeekStat]:
+def weekly_stats(
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    exposures: Optional[Sequence[float]] = None,
+) -> List[WeekStat]:
     if len(days) != len(counts):
         raise ValueError("days and counts length mismatch")
+    if exposures is not None and len(exposures) != len(counts):
+        raise ValueError("days and exposures length mismatch")
 
-    buckets: Dict[Tuple[int, int], List[int]] = collections.defaultdict(list)
-    for day, count in zip(days, counts):
+    buckets: Dict[Tuple[int, int], List[Tuple[int, float]]] = collections.defaultdict(list)
+    effective_exposures = exposures if exposures is not None else [1.0] * len(counts)
+    for day, count, exposure in zip(days, counts, effective_exposures):
         iso = day.isocalendar()
-        buckets[(iso.year, iso.week)].append(count)
+        buckets[(iso.year, iso.week)].append((count, exposure))
 
     result: List[WeekStat] = []
     for key in sorted(buckets.keys()):
         vals = buckets[key]
-        result.append((key, sum(vals) / len(vals), sum(vals)))
+        total = sum(count for count, _ in vals)
+        total_exposure = sum(exposure for _, exposure in vals)
+        avg = (total / total_exposure) if total_exposure > 0.0 else 0.0
+        result.append((key, avg, total))
     return result
 
 
@@ -137,14 +190,25 @@ def build_daily_series(
     return days, counts
 
 
-def analyze_series(days: Sequence[dt.date], counts: Sequence[int]) -> AnalysisResult:
+def analyze_series(
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    *,
+    now_utc: Optional[dt.datetime] = None,
+) -> AnalysisResult:
     if not days or not counts:
         raise ValueError("days and counts must not be empty")
     if len(days) != len(counts):
         raise ValueError("days and counts length mismatch")
 
+    now = _normalize_utc(now_utc)
+    exposures = _day_exposure_weights(days, now)
+    effective_days = sum(exposures)
+    current_day_hours_elapsed = None
+    if now.date() in days:
+        current_day_hours_elapsed = _current_day_fraction(now) * 24.0
     total_sum = sum(counts)
-    avg = total_sum / len(counts)
+    avg = _exposure_adjusted_mean(counts, exposures)
     median = statistics.median(counts)
     stdev = statistics.pstdev(counts)
     nonzero = sum(1 for x in counts if x > 0)
@@ -154,15 +218,15 @@ def analyze_series(days: Sequence[dt.date], counts: Sequence[int]) -> AnalysisRe
 
     percentile_by_p = percentiles(counts, [50, 75, 90, 95, 99])
 
-    ma7 = moving_average(counts, 7)
-    ma28 = moving_average(counts, 28)
+    ma7 = moving_average(counts, 7, exposures)
+    ma28 = moving_average(counts, 28, exposures)
     med7 = moving_median(counts, 7)
     med28 = moving_median(counts, 28)
 
     slope, intercept, r2 = linear_regression(counts)
     streak_nonzero = longest_streak(counts, lambda x: x > 0)
     streak_zero = longest_streak(counts, lambda x: x == 0)
-    weekly = weekly_stats(days, counts)
+    weekly = weekly_stats(days, counts, exposures)
 
     return AnalysisResult(
         first_day=days[0],
@@ -187,4 +251,6 @@ def analyze_series(days: Sequence[dt.date], counts: Sequence[int]) -> AnalysisRe
         streak_nonzero=streak_nonzero,
         streak_zero=streak_zero,
         weekly=weekly,
+        average_effective_days=effective_days,
+        current_day_hours_elapsed=current_day_hours_elapsed,
     )

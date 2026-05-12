@@ -55,6 +55,8 @@ class AnalysisResult:
     streak_nonzero: Streak
     streak_zero: Streak
     weekly: List[WeekStat]
+    average_effective_days: float = 0.0
+    current_day_hours_elapsed: Optional[float] = None
 
 
 @dataclass(frozen=True)

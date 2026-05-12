@@ -10,7 +10,7 @@ import requests
 
 from core.analytics import analyze_series, build_daily_series
 from core.backtest import run_backtest
-from core.date_utils import utc_midnight_ts
+from core.date_utils import utc_midnight_ts, utc_now
 from core.forecast import (
     MAX_HORIZON_DAYS,
     generate_forecast,
@@ -76,8 +76,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not star_dates:
             print("No stars found in GitHub response; using a one-day zero baseline.")
 
-        days, counts = build_daily_series(star_dates)
-        analysis = analyze_series(days, counts)
+        now_utc = utc_now()
+        days, counts = build_daily_series(star_dates, end_day=now_utc.date())
+        analysis = analyze_series(days, counts, now_utc=now_utc)
         print_summary(repo.full_name, analysis)
 
         event_signals = None
