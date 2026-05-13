@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Counter, Dict, List, Sequence, Tuple
 
 BASE_EVENT_KEYS = ("release", "commits", "issues", "prs")
+EVENT_COVERAGE_LOOKBACK_DAYS = 84
 
 
 @dataclass(frozen=True)
@@ -71,11 +72,18 @@ def build_event_rows(days: Sequence[dt.date], signals: EventSignals) -> List[Dic
     return rows
 
 
-def event_coverage_ratio(rows: Sequence[Dict[str, float]]) -> float:
+def event_coverage_ratio(
+    rows: Sequence[Dict[str, float]],
+    *,
+    lookback_days: int = EVENT_COVERAGE_LOOKBACK_DAYS,
+) -> float:
     if not rows:
         return 0.0
-    active_days = sum(1 for row in rows if row.get("activity", 0.0) > 0.0)
-    return active_days / len(rows)
+    if lookback_days <= 0:
+        raise ValueError("lookback_days must be > 0")
+    recent_rows = rows[-lookback_days:]
+    active_days = sum(1 for row in recent_rows if row.get("activity", 0.0) > 0.0)
+    return active_days / len(recent_rows)
 
 
 def _weekday_means(history_days: Sequence[dt.date], values: Sequence[float]) -> Dict[int, float]:
@@ -93,6 +101,8 @@ def estimate_future_event_rows(
     history_days: Sequence[dt.date],
     history_rows: Sequence[Dict[str, float]],
     horizon_days: int,
+    *,
+    start_after_day: dt.date | None = None,
 ) -> Tuple[List[dt.date], List[Dict[str, float]]]:
     if horizon_days <= 0:
         return [], []
@@ -126,7 +136,7 @@ def estimate_future_event_rows(
 
     future_days: List[dt.date] = []
     future_rows: List[Dict[str, float]] = []
-    last_day = history_days[-1]
+    last_day = start_after_day or history_days[-1]
     for step in range(1, horizon_days + 1):
         day = last_day + dt.timedelta(days=step)
         weekday = day.weekday()

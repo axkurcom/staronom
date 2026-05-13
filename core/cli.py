@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 
 import requests
 
-from core.analytics import analyze_series, build_daily_series
+from core.analytics import analyze_daily_series
 from core.backtest import run_backtest
 from core.date_utils import utc_midnight_ts, utc_now
 from core.forecast import (
@@ -26,6 +26,7 @@ from core.reporting import (
     print_summary,
 )
 from core.rrd import create_rrd, rrd_update
+from core.series import build_daily_series
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -77,8 +78,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("No stars found in GitHub response; using a one-day zero baseline.")
 
         now_utc = utc_now()
-        days, counts = build_daily_series(star_dates, end_day=now_utc.date())
-        analysis = analyze_series(days, counts, now_utc=now_utc)
+        daily_series = build_daily_series(star_dates, now_utc=now_utc)
+        analysis = analyze_daily_series(daily_series)
         print_summary(repo.full_name, analysis)
 
         event_signals = None
@@ -91,13 +92,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.forecast:
             forecast = generate_forecast(
                 repo=repo.full_name,
-                history_days=analysis.days,
-                history_counts=analysis.counts,
+                history_days=daily_series.model_days,
+                history_counts=daily_series.model_counts,
                 horizon_days=args.horizon,
                 interval_levels=interval_levels,
                 with_events=args.with_events,
                 event_signals=event_signals,
                 with_drop_alert=args.drop_alert,
+                forecast_start_after=daily_series.forecast_start_after,
             )
             print_forecast_summary(forecast)
             if args.forecast_out:
@@ -107,8 +109,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.backtest:
             backtest = run_backtest(
                 repo=repo.full_name,
-                history_days=analysis.days,
-                history_counts=analysis.counts,
+                history_days=daily_series.model_days,
+                history_counts=daily_series.model_counts,
                 horizon_days=args.horizon,
                 interval_levels=interval_levels,
                 with_events=args.with_events,
@@ -121,7 +123,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         cumulative = 0
         skipped_updates = 0
-        for day, daily in zip(analysis.days, analysis.counts):
+        for day, daily in zip(daily_series.days, daily_series.counts):
             cumulative += daily
             updated = rrd_update(rrd_path, day, daily, cumulative)
             if not updated:

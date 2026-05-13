@@ -6,35 +6,8 @@ import math
 import statistics
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from core.date_utils import daterange, utc_today
 from core.models import AnalysisResult, Streak, WeekStat
-
-
-SECONDS_PER_DAY = 24 * 60 * 60
-
-
-def _normalize_utc(now_utc: Optional[dt.datetime]) -> dt.datetime:
-    if now_utc is None:
-        return dt.datetime.now(tz=dt.timezone.utc)
-    if now_utc.tzinfo is None:
-        return now_utc.replace(tzinfo=dt.timezone.utc)
-    return now_utc.astimezone(dt.timezone.utc)
-
-
-def _current_day_fraction(now_utc: Optional[dt.datetime] = None) -> float:
-    now = _normalize_utc(now_utc)
-    midnight = dt.datetime(now.year, now.month, now.day, tzinfo=dt.timezone.utc)
-    elapsed = (now - midnight).total_seconds()
-    return max(0.0, min(elapsed / SECONDS_PER_DAY, 1.0))
-
-
-def _day_exposure_weights(
-    days: Sequence[dt.date], now_utc: Optional[dt.datetime] = None
-) -> List[float]:
-    now = _normalize_utc(now_utc)
-    today = now.date()
-    current_fraction = _current_day_fraction(now)
-    return [current_fraction if day == today else 1.0 for day in days]
+from core.series import DailySeries, build_daily_counts, series_from_counts
 
 
 def _exposure_adjusted_mean(values: Sequence[float], exposures: Sequence[float]) -> float:
@@ -177,17 +150,7 @@ def build_daily_series(
     empty_day: Optional[dt.date] = None,
     end_day: Optional[dt.date] = None,
 ) -> Tuple[List[dt.date], List[int]]:
-    daily_counter = collections.Counter(star_dates)
-    final_day = end_day or utc_today()
-    if not daily_counter:
-        baseline_day = empty_day or final_day
-        return [baseline_day], [0]
-
-    first = min(daily_counter)
-    last = max(max(daily_counter), final_day)
-    days = list(daterange(first, last))
-    counts = [daily_counter.get(day, 0) for day in days]
-    return days, counts
+    return build_daily_counts(star_dates, empty_day=empty_day, end_day=end_day)
 
 
 def analyze_series(
@@ -196,36 +159,44 @@ def analyze_series(
     *,
     now_utc: Optional[dt.datetime] = None,
 ) -> AnalysisResult:
+    return analyze_daily_series(series_from_counts(days, counts, now_utc=now_utc))
+
+
+def analyze_daily_series(series: DailySeries) -> AnalysisResult:
+    days = series.days
+    counts = series.counts
     if not days or not counts:
         raise ValueError("days and counts must not be empty")
     if len(days) != len(counts):
         raise ValueError("days and counts length mismatch")
 
-    now = _normalize_utc(now_utc)
-    exposures = _day_exposure_weights(days, now)
-    effective_days = sum(exposures)
-    current_day_hours_elapsed = None
-    if now.date() in days:
-        current_day_hours_elapsed = _current_day_fraction(now) * 24.0
+    stats_days = series.model_days
+    stats_counts = series.model_counts
+    exposures = series.mean_exposures
+    effective_days = series.average_effective_days
     total_sum = sum(counts)
     avg = _exposure_adjusted_mean(counts, exposures)
-    median = statistics.median(counts)
-    stdev = statistics.pstdev(counts)
-    nonzero = sum(1 for x in counts if x > 0)
+    median = statistics.median(stats_counts)
+    stdev = statistics.pstdev(stats_counts)
+    nonzero = sum(1 for x in stats_counts if x > 0)
 
-    max_day = max(counts)
-    max_dates = [days[i] for i, value in enumerate(counts) if value == max_day]
+    max_day = max(stats_counts)
+    max_dates = [
+        stats_days[i]
+        for i, value in enumerate(stats_counts)
+        if value == max_day
+    ]
 
-    percentile_by_p = percentiles(counts, [50, 75, 90, 95, 99])
+    percentile_by_p = percentiles(stats_counts, [50, 75, 90, 95, 99])
 
     ma7 = moving_average(counts, 7, exposures)
     ma28 = moving_average(counts, 28, exposures)
-    med7 = moving_median(counts, 7)
-    med28 = moving_median(counts, 28)
+    med7 = moving_median(stats_counts, 7)
+    med28 = moving_median(stats_counts, 28)
 
-    slope, intercept, r2 = linear_regression(counts)
-    streak_nonzero = longest_streak(counts, lambda x: x > 0)
-    streak_zero = longest_streak(counts, lambda x: x == 0)
+    slope, intercept, r2 = linear_regression(stats_counts)
+    streak_nonzero = longest_streak(stats_counts, lambda x: x > 0)
+    streak_zero = longest_streak(stats_counts, lambda x: x == 0)
     weekly = weekly_stats(days, counts, exposures)
 
     return AnalysisResult(
@@ -252,5 +223,6 @@ def analyze_series(
         streak_zero=streak_zero,
         weekly=weekly,
         average_effective_days=effective_days,
-        current_day_hours_elapsed=current_day_hours_elapsed,
+        current_day_hours_elapsed=series.current_day_hours_elapsed,
+        completed_day_count=len(stats_counts),
     )

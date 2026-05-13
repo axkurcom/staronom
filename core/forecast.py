@@ -568,6 +568,7 @@ def generate_forecast(
     n_sims: int = DEFAULT_N_SIMS,
     weight_eval_points: int = DEFAULT_WEIGHT_EVAL_POINTS,
     weight_simulations: int = DEFAULT_WEIGHT_SIMULATIONS,
+    forecast_start_after: Optional[dt.date] = None,
 ) -> ForecastResult:
     if horizon_days <= 0:
         raise ValueError("horizon_days must be > 0")
@@ -593,7 +594,10 @@ def generate_forecast(
     coverage = event_coverage_ratio(history_event_rows)
     use_events = with_events and coverage >= 0.03
     future_days, future_event_rows = estimate_future_event_rows(
-        history_days, history_event_rows, horizon_days
+        history_days,
+        history_event_rows,
+        horizon_days,
+        start_after_day=forecast_start_after,
     )
 
     weights = _compute_model_weights(

@@ -38,6 +38,7 @@ def print_summary(repo: str, analysis: AnalysisResult) -> None:
             f"Average basis: {analysis.average_effective_days:.2f} effective days "
             f"(today {analysis.current_day_hours_elapsed:.1f}h elapsed UTC)"
         )
+        print(f"Distribution/model basis: {analysis.completed_day_count} UTC days")
     print(f"Total stars (in range): {analysis.total_stars}")
     print(f"Days with >0 stars: {analysis.nonzero_days} ({nonzero_pct:.1f}%)")
     print()

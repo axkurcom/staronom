@@ -57,6 +57,7 @@ class AnalysisResult:
     weekly: List[WeekStat]
     average_effective_days: float = 0.0
     current_day_hours_elapsed: Optional[float] = None
+    completed_day_count: int = 0
 
 
 @dataclass(frozen=True)
