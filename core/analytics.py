@@ -6,8 +6,13 @@ import math
 import statistics
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from core.models import AnalysisResult, Streak, WeekStat
+from core.models import AnalysisResult, BurstEvent, Streak, WeekStat
 from core.series import DailySeries, build_daily_counts, series_from_counts
+
+BURST_LOOKBACK_DAYS = 28
+BURST_MIN_HISTORY_DAYS = 14
+BURST_THRESHOLD_K = 5.0
+BURST_MAD_FLOOR = 1.0
 
 
 def _exposure_adjusted_mean(values: Sequence[float], exposures: Sequence[float]) -> float:
@@ -96,6 +101,62 @@ def percentiles(values: Sequence[int], requested: Sequence[int]) -> Dict[int, in
         k = max(1, math.ceil((p / 100) * n))
         result[p] = ordered[k - 1]
     return result
+
+
+def median_absolute_deviation(values: Sequence[float], center: float) -> float:
+    if not values:
+        return 0.0
+    return statistics.median(abs(value - center) for value in values)
+
+
+def detect_bursts(
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    *,
+    lookback_days: int = BURST_LOOKBACK_DAYS,
+    min_history_days: int = BURST_MIN_HISTORY_DAYS,
+    threshold_k: float = BURST_THRESHOLD_K,
+    mad_floor: float = BURST_MAD_FLOOR,
+) -> List[BurstEvent]:
+    if len(days) != len(counts):
+        raise ValueError("days and counts length mismatch")
+    if lookback_days <= 0:
+        raise ValueError("lookback_days must be > 0")
+    if min_history_days <= 0:
+        raise ValueError("min_history_days must be > 0")
+    if threshold_k <= 0.0:
+        raise ValueError("threshold_k must be > 0")
+    if mad_floor <= 0.0:
+        raise ValueError("mad_floor must be > 0")
+
+    bursts: List[BurstEvent] = []
+    for idx, (day, count) in enumerate(zip(days, counts)):
+        start = max(0, idx - lookback_days)
+        sample = [float(value) for value in counts[start:idx]]
+        if len(sample) < min_history_days:
+            continue
+
+        baseline = float(statistics.median(sample))
+        mad = float(median_absolute_deviation(sample, baseline))
+        robust_mad = max(mad, mad_floor)
+        threshold = baseline + threshold_k * robust_mad
+        if float(count) <= threshold:
+            continue
+
+        uplift = float(count) - baseline
+        score = uplift / robust_mad
+        bursts.append(
+            BurstEvent(
+                day=day,
+                count=count,
+                baseline_median=baseline,
+                mad=mad,
+                threshold=threshold,
+                score=score,
+                uplift=uplift,
+            )
+        )
+    return bursts
 
 
 def weekly_stats(
@@ -198,6 +259,7 @@ def analyze_daily_series(series: DailySeries) -> AnalysisResult:
     streak_nonzero = longest_streak(stats_counts, lambda x: x > 0)
     streak_zero = longest_streak(stats_counts, lambda x: x == 0)
     weekly = weekly_stats(days, counts, exposures)
+    bursts = detect_bursts(stats_days, stats_counts)
 
     return AnalysisResult(
         first_day=days[0],
@@ -222,7 +284,10 @@ def analyze_daily_series(series: DailySeries) -> AnalysisResult:
         streak_nonzero=streak_nonzero,
         streak_zero=streak_zero,
         weekly=weekly,
+        bursts=bursts,
         average_effective_days=effective_days,
         current_day_hours_elapsed=series.current_day_hours_elapsed,
         completed_day_count=len(stats_counts),
+        burst_lookback_days=BURST_LOOKBACK_DAYS,
+        burst_threshold_k=BURST_THRESHOLD_K,
     )

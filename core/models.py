@@ -9,6 +9,17 @@ WeekStat = Tuple[Tuple[int, int], float, int]
 
 
 @dataclass(frozen=True)
+class BurstEvent:
+    day: dt.date
+    count: int
+    baseline_median: float
+    mad: float
+    threshold: float
+    score: float
+    uplift: float
+
+
+@dataclass(frozen=True)
 class RepoRef:
     owner: str
     repo: str
@@ -55,9 +66,12 @@ class AnalysisResult:
     streak_nonzero: Streak
     streak_zero: Streak
     weekly: List[WeekStat]
+    bursts: List[BurstEvent]
     average_effective_days: float = 0.0
     current_day_hours_elapsed: Optional[float] = None
     completed_day_count: int = 0
+    burst_lookback_days: int = 28
+    burst_threshold_k: float = 5.0
 
 
 @dataclass(frozen=True)

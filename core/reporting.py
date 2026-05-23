@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.models import AnalysisResult, BacktestResult, ForecastResult
+from core.models import AnalysisResult, BacktestResult, BurstEvent, ForecastResult
 
 
 def _streak_text(label: str, analysis: AnalysisResult, streak: tuple[int, int, int]) -> Optional[str]:
@@ -20,6 +20,15 @@ def _peak_text(analysis: AnalysisResult) -> str:
     return (
         f"{analysis.max_day_count} on {analysis.max_day_dates[0]} "
         f"(+{len(analysis.max_day_dates) - 1} more days)"
+    )
+
+
+def _burst_event_text(prefix: str, event: BurstEvent) -> str:
+    return (
+        f"{prefix}: {event.day} count={event.count} "
+        f"baseline={event.baseline_median:.2f} "
+        f"threshold={event.threshold:.2f} "
+        f"score={event.score:.2f} uplift={event.uplift:.2f}"
     )
 
 
@@ -52,6 +61,20 @@ def print_summary(repo: str, analysis: AnalysisResult) -> None:
         "  percentiles (stars/day): "
         f"p50={p[50]} p75={p[75]} p90={p[90]} p95={p[95]} p99={p[99]}"
     )
+    print()
+    print(
+        f"Burst detector (median{analysis.burst_lookback_days} + "
+        f"{analysis.burst_threshold_k:g}*MAD, completed days):"
+    )
+    if analysis.bursts:
+        latest_burst = analysis.bursts[-1]
+        strongest_burst = max(analysis.bursts, key=lambda event: event.score)
+        print(f"  bursts detected: {len(analysis.bursts)}")
+        print("  " + _burst_event_text("latest", latest_burst))
+        if strongest_burst.day != latest_burst.day:
+            print("  " + _burst_event_text("strongest", strongest_burst))
+    else:
+        print("  no robust bursts detected")
 
     nonzero_streak = _streak_text(
         "Longest streak with stars (>0)", analysis, analysis.streak_nonzero
