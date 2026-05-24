@@ -45,6 +45,8 @@ The default run prints:
 - UTC range and total stars in the range.
 - Average stars/day, median, standard deviation, max day, and percentiles.
 - Burst detector results for unusually large daily star spikes.
+- Sustained momentum score with growth, zero-day, volatility, and weekly
+  stability components.
 - Nonzero and zero-day streaks.
 - MA7, MA28, Median7, and weekly averages.
 - RRD-backed graphs in `./out`:
@@ -88,6 +90,9 @@ The descriptive layer is intentionally conservative:
 - Burst detection compares each completed day to its rolling 28-day median and
   median absolute deviation, so launch spikes and external attention bursts can
   stand out without letting the spike train its own baseline.
+- Sustained momentum scores combine MA7-vs-MA28 growth, recent zero-day rate,
+  daily volatility, and week-to-week stability. This separates steady organic
+  momentum from a noisy spike-driven run.
 - Weekly averages use effective exposure for the current week.
 - Linear trend and graph annotations are based on completed-day statistics, not
   intraday noise.
@@ -164,6 +169,8 @@ Staronom is strongest as an operational analytics tool for GitHub star history:
 - It handles trailing zero days and the current partial day explicitly.
 - It detects large launch or attention bursts with a robust rolling median/MAD
   baseline.
+- It scores sustained momentum as an explainable composite instead of relying on
+  MA7 alone.
 - It separates reporting math from model training history.
 - It has bounded numerical behavior for horizons, probabilities, trend growth,
   and invalid history counts.
