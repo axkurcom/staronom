@@ -6,13 +6,15 @@ import math
 import statistics
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from core.models import AnalysisResult, BurstEvent, Streak, WeekStat
+from core.models import AnalysisResult, BurstEvent, MomentumScore, Streak, WeekStat
 from core.series import DailySeries, build_daily_counts, series_from_counts
 
 BURST_LOOKBACK_DAYS = 28
 BURST_MIN_HISTORY_DAYS = 14
 BURST_THRESHOLD_K = 5.0
 BURST_MAD_FLOOR = 1.0
+MOMENTUM_SHORT_DAYS = 7
+MOMENTUM_LOOKBACK_DAYS = 28
 
 
 def _exposure_adjusted_mean(values: Sequence[float], exposures: Sequence[float]) -> float:
@@ -107,6 +109,111 @@ def median_absolute_deviation(values: Sequence[float], center: float) -> float:
     if not values:
         return 0.0
     return statistics.median(abs(value - center) for value in values)
+
+
+def _mean(values: Sequence[float]) -> float:
+    return (sum(values) / len(values)) if values else 0.0
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    return max(low, min(value, high))
+
+
+def _ratio_score(numerator: float, denominator: float) -> float:
+    total = numerator + denominator
+    if total <= 0.0:
+        return 0.0
+    return _clip(100.0 * numerator / total, 0.0, 100.0)
+
+
+def _cv_score(values: Sequence[float]) -> Tuple[float, float]:
+    if not values:
+        return 0.0, 0.0
+    avg = _mean(values)
+    if avg <= 0.0:
+        return 0.0, 0.0
+    cv = statistics.pstdev(values) / avg if len(values) > 1 else 0.0
+    return cv, 100.0 / (1.0 + cv)
+
+
+def _weekly_stability_score(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    weekly_means = [
+        _mean(values[i : i + MOMENTUM_SHORT_DAYS])
+        for i in range(0, len(values), MOMENTUM_SHORT_DAYS)
+        if len(values[i : i + MOMENTUM_SHORT_DAYS]) >= 3
+    ]
+    if len(weekly_means) < 2:
+        _, fallback_score = _cv_score(values)
+        return fallback_score
+    _, score = _cv_score(weekly_means)
+    return score
+
+
+def _momentum_label(score: float, growth_ratio: float, zero_day_rate: float) -> str:
+    if zero_day_rate >= 0.5 and score < 65.0:
+        return "fragile"
+    if growth_ratio <= -0.25 and score < 70.0:
+        return "fading"
+    if score >= 75.0:
+        return "sustained"
+    if score >= 60.0:
+        return "building"
+    if score >= 40.0:
+        return "mixed"
+    return "weak"
+
+
+def sustained_momentum_score(
+    counts: Sequence[int],
+    *,
+    short_days: int = MOMENTUM_SHORT_DAYS,
+    lookback_days: int = MOMENTUM_LOOKBACK_DAYS,
+) -> MomentumScore:
+    if short_days <= 0:
+        raise ValueError("short_days must be > 0")
+    if lookback_days <= 0:
+        raise ValueError("lookback_days must be > 0")
+
+    sample = [float(value) for value in counts[-lookback_days:]]
+    short_sample = [float(value) for value in counts[-short_days:]]
+    sample_days = len(sample)
+    ma7 = _mean(short_sample)
+    ma28 = _mean(sample)
+    growth_ratio = ((ma7 - ma28) / max(ma28, 1.0)) if sample_days else 0.0
+    growth_score = _ratio_score(ma7, ma28)
+    zero_day_rate = (
+        sum(1 for value in sample if value <= 0.0) / sample_days
+        if sample_days
+        else 1.0
+    )
+    zero_day_score = 100.0 * (1.0 - zero_day_rate)
+    volatility_cv, volatility_score = _cv_score(sample)
+    weekly_stability = _weekly_stability_score(sample)
+
+    score = (
+        0.35 * growth_score
+        + 0.25 * zero_day_score
+        + 0.20 * volatility_score
+        + 0.20 * weekly_stability
+    )
+    score = _clip(score, 0.0, 100.0)
+    label = _momentum_label(score, growth_ratio, zero_day_rate)
+    return MomentumScore(
+        score=score,
+        label=label,
+        ma7=ma7,
+        ma28=ma28,
+        growth_ratio=growth_ratio,
+        zero_day_rate=zero_day_rate,
+        volatility_cv=volatility_cv,
+        weekly_stability_score=weekly_stability,
+        growth_score=growth_score,
+        zero_day_score=zero_day_score,
+        volatility_score=volatility_score,
+        sample_days=sample_days,
+    )
 
 
 def detect_bursts(
@@ -259,6 +366,7 @@ def analyze_daily_series(series: DailySeries) -> AnalysisResult:
     streak_nonzero = longest_streak(stats_counts, lambda x: x > 0)
     streak_zero = longest_streak(stats_counts, lambda x: x == 0)
     weekly = weekly_stats(days, counts, exposures)
+    momentum = sustained_momentum_score(stats_counts)
     bursts = detect_bursts(stats_days, stats_counts)
 
     return AnalysisResult(
@@ -284,6 +392,7 @@ def analyze_daily_series(series: DailySeries) -> AnalysisResult:
         streak_nonzero=streak_nonzero,
         streak_zero=streak_zero,
         weekly=weekly,
+        momentum=momentum,
         bursts=bursts,
         average_effective_days=effective_days,
         current_day_hours_elapsed=series.current_day_hours_elapsed,

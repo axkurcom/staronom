@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core.models import AnalysisResult, BacktestResult, BurstEvent, ForecastResult
+from core.models import (
+    AnalysisResult,
+    BacktestResult,
+    BurstEvent,
+    ForecastResult,
+    MomentumScore,
+)
 
 
 def _streak_text(label: str, analysis: AnalysisResult, streak: tuple[int, int, int]) -> Optional[str]:
@@ -29,6 +35,14 @@ def _burst_event_text(prefix: str, event: BurstEvent) -> str:
         f"baseline={event.baseline_median:.2f} "
         f"threshold={event.threshold:.2f} "
         f"score={event.score:.2f} uplift={event.uplift:.2f}"
+    )
+
+
+def _momentum_text(momentum: MomentumScore) -> str:
+    return (
+        f"score={momentum.score:.1f}/100 label={momentum.label} "
+        f"MA7={momentum.ma7:.2f} MA28={momentum.ma28:.2f} "
+        f"growth={momentum.growth_ratio:+.1%}"
     )
 
 
@@ -75,6 +89,17 @@ def print_summary(repo: str, analysis: AnalysisResult) -> None:
             print("  " + _burst_event_text("strongest", strongest_burst))
     else:
         print("  no robust bursts detected")
+
+    momentum = analysis.momentum
+    print()
+    print("Sustained momentum score:")
+    print("  " + _momentum_text(momentum))
+    print(
+        f"  zero_days={momentum.zero_day_rate:.1%} "
+        f"volatility_cv={momentum.volatility_cv:.2f} "
+        f"weekly_stability={momentum.weekly_stability_score:.1f}/100 "
+        f"sample={momentum.sample_days}d"
+    )
 
     nonzero_streak = _streak_text(
         "Longest streak with stars (>0)", analysis, analysis.streak_nonzero

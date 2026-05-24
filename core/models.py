@@ -20,6 +20,22 @@ class BurstEvent:
 
 
 @dataclass(frozen=True)
+class MomentumScore:
+    score: float
+    label: str
+    ma7: float
+    ma28: float
+    growth_ratio: float
+    zero_day_rate: float
+    volatility_cv: float
+    weekly_stability_score: float
+    growth_score: float
+    zero_day_score: float
+    volatility_score: float
+    sample_days: int
+
+
+@dataclass(frozen=True)
 class RepoRef:
     owner: str
     repo: str
@@ -66,6 +82,7 @@ class AnalysisResult:
     streak_nonzero: Streak
     streak_zero: Streak
     weekly: List[WeekStat]
+    momentum: MomentumScore
     bursts: List[BurstEvent]
     average_effective_days: float = 0.0
     current_day_hours_elapsed: Optional[float] = None
