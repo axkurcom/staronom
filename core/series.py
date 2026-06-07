@@ -39,7 +39,11 @@ def build_daily_counts(
         return [baseline_day], [0]
 
     first = min(daily_counter)
-    last = max(max(daily_counter), final_day)
+    last_seen = max(daily_counter)
+    if last_seen > final_day:
+        raise ValueError("star_dates must not contain dates after end_day")
+
+    last = max(last_seen, final_day)
     days = list(daterange(first, last))
     counts = [daily_counter.get(day, 0) for day in days]
     return days, counts
@@ -118,6 +122,8 @@ def series_from_counts(
     day_list = list(days)
     count_list = list(counts)
     exposures = _exposures_for_days(day_list, now)
+    if any(day > now.date() for day in day_list):
+        raise ValueError("days must not contain dates after now_utc date")
     model_days, model_counts = _model_history(day_list, count_list, exposures)
     current_day_hours_elapsed = None
     if now.date() in day_list:

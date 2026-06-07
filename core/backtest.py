@@ -18,18 +18,19 @@ def _pinball_loss(actual: float, predicted: float, q: float) -> float:
 def _select_cutoffs(
     n: int, horizon_days: int, min_train_days: int = 120, max_windows: int = 12
 ) -> List[int]:
+    first_cutoff = min_train_days - 1
     max_cutoff = n - horizon_days - 1
-    if max_cutoff < min_train_days:
+    if max_cutoff < first_cutoff:
         return []
 
-    available = max_cutoff - min_train_days + 1
+    available = max_cutoff - first_cutoff + 1
     if available <= max_windows:
-        return list(range(min_train_days, max_cutoff + 1))
+        return list(range(first_cutoff, max_cutoff + 1))
 
     step = available / max_windows
     cutoffs = []
     for i in range(max_windows):
-        cutoff = int(min_train_days + i * step)
+        cutoff = int(first_cutoff + i * step)
         cutoff = min(cutoff, max_cutoff)
         cutoffs.append(cutoff)
     if cutoffs[-1] != max_cutoff:

@@ -145,8 +145,7 @@ def _weekly_stability_score(values: Sequence[float]) -> float:
         if len(values[i : i + MOMENTUM_SHORT_DAYS]) >= 3
     ]
     if len(weekly_means) < 2:
-        _, fallback_score = _cv_score(values)
-        return fallback_score
+        return 0.0
     _, score = _cv_score(weekly_means)
     return score
 
@@ -198,8 +197,14 @@ def sustained_momentum_score(
         + 0.20 * volatility_score
         + 0.20 * weekly_stability
     )
+    if sample_days < lookback_days:
+        score *= sample_days / lookback_days
     score = _clip(score, 0.0, 100.0)
-    label = _momentum_label(score, growth_ratio, zero_day_rate)
+    label = (
+        "insufficient"
+        if sample_days < short_days
+        else _momentum_label(score, growth_ratio, zero_day_rate)
+    )
     return MomentumScore(
         score=score,
         label=label,

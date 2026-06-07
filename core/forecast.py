@@ -34,14 +34,16 @@ def _clip(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
 
 
-def _validate_probability(value: float, *, name: str) -> float:
-    if not math.isfinite(value) or value <= 0.0 or value >= 1.0:
-        raise ValueError(f"{name} must be finite and in range (0, 1): {value!r}")
+def _validate_interval_level(value: float) -> float:
+    if not math.isfinite(value) or value <= 0.5 or value >= 1.0:
+        raise ValueError(
+            f"interval must be finite and in range (0.5, 1): {value!r}"
+        )
     return float(value)
 
 
 def _normalize_interval_levels(levels: Sequence[float]) -> List[float]:
-    normalized = [_validate_probability(level, name="interval") for level in levels]
+    normalized = [_validate_interval_level(level) for level in levels]
     if not normalized:
         raise ValueError("interval levels list is empty")
     return sorted(set(normalized))
@@ -147,6 +149,10 @@ def _nb_sample(mean: float, dispersion: float, rng: random.Random) -> int:
 
     lam = rng.gammavariate(dispersion, mean / dispersion)
     return _poisson_sample(lam, rng)
+
+
+def _positive_nb_sample(mean: float, dispersion: float, rng: random.Random) -> int:
+    return 1 + _nb_sample(max(mean - 1.0, 0.0), dispersion, rng)
 
 
 def _regularized_weekday_factors(days: Sequence[dt.date], counts: Sequence[int]) -> List[float]:
@@ -332,8 +338,8 @@ def _fit_zinb(
     zero_prob = _clip(zero_prob, 0.05, 0.98)
 
     nonzero = [x for x in counts if x > 0]
-    mean_nonzero = statistics.mean(nonzero) if nonzero else 0.5
-    mean_nonzero = max(mean_nonzero, 0.1)
+    mean_nonzero = statistics.mean(nonzero) if nonzero else 1.0
+    mean_nonzero = max(mean_nonzero, 1.0)
 
     nz_var = statistics.pvariance(nonzero) if len(nonzero) > 1 else mean_nonzero
     if nz_var > mean_nonzero:
@@ -376,12 +382,12 @@ def _simulate_zinb(
             event_row = future_event_rows[i] if i < len(future_event_rows) else {}
             activity = event_row.get("activity", 0.0)
             zero_prob = params.zero_prob * math.exp(-params.event_activity_coef * activity)
-            zero_prob = _clip(zero_prob, 0.02, 0.995)
+            zero_prob = _clip(zero_prob, 0.0, 0.995)
             if rng.random() < zero_prob:
                 path.append(0)
                 continue
             mu = params.mean_nonzero * params.weekday_factors[day.weekday()]
-            path.append(_nb_sample(mu, params.dispersion, rng))
+            path.append(_positive_nb_sample(mu, params.dispersion, rng))
         out.append(path)
     return out
 
@@ -580,9 +586,7 @@ def generate_forecast(
         raise ValueError("history_days and history_counts length mismatch")
     _validate_history_counts(history_counts)
 
-    levels = list(interval_levels or [0.5, 0.8, 0.95])
-    if 0.5 not in levels:
-        levels.append(0.5)
+    levels = list(interval_levels or [0.8, 0.95])
     if 0.8 not in levels:
         levels.append(0.8)
     if 0.95 not in levels:

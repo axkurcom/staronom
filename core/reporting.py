@@ -48,7 +48,12 @@ def _momentum_text(momentum: MomentumScore) -> str:
 
 def print_summary(repo: str, analysis: AnalysisResult) -> None:
     span_days = len(analysis.days)
-    nonzero_pct = (analysis.nonzero_days / span_days * 100.0) if span_days else 0.0
+    nonzero_basis_days = analysis.completed_day_count or span_days
+    nonzero_pct = (
+        analysis.nonzero_days / nonzero_basis_days * 100.0
+        if nonzero_basis_days
+        else 0.0
+    )
 
     print()
     print(f"Repo: {repo}")
@@ -63,7 +68,10 @@ def print_summary(repo: str, analysis: AnalysisResult) -> None:
         )
         print(f"Distribution/model basis: {analysis.completed_day_count} UTC days")
     print(f"Total stars (in range): {analysis.total_stars}")
-    print(f"Days with >0 stars: {analysis.nonzero_days} ({nonzero_pct:.1f}%)")
+    print(
+        f"Days with >0 stars (distribution/model basis): "
+        f"{analysis.nonzero_days}/{nonzero_basis_days} ({nonzero_pct:.1f}%)"
+    )
     print()
     print("Daily delta stats:")
     print(f"  avg/day: {analysis.average_per_day:.3f}")
