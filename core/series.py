@@ -140,6 +140,41 @@ def series_from_counts(
     )
 
 
+def extend_daily_counts(
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    *,
+    end_day: dt.date,
+) -> Tuple[List[dt.date], List[int]]:
+    if not days or not counts:
+        raise ValueError("days and counts must not be empty")
+    if len(days) != len(counts):
+        raise ValueError("days and counts length mismatch")
+
+    day_list = list(days)
+    count_list = list(counts)
+    if day_list[-1] > end_day:
+        raise ValueError("days must not contain dates after end_day")
+    for idx, day in enumerate(day_list):
+        if idx > 0 and day != day_list[idx - 1] + dt.timedelta(days=1):
+            raise ValueError("days must be sorted and contiguous")
+    for day in daterange(day_list[-1] + dt.timedelta(days=1), end_day):
+        day_list.append(day)
+        count_list.append(0)
+    return day_list, count_list
+
+
+def series_from_daily_counts(
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    *,
+    now_utc: Optional[dt.datetime] = None,
+) -> DailySeries:
+    now = normalize_utc(now_utc)
+    days, counts = extend_daily_counts(days, counts, end_day=now.date())
+    return series_from_counts(days, counts, now_utc=now)
+
+
 def build_daily_series(
     star_dates: Sequence[dt.date],
     *,
