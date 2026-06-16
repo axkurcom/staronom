@@ -8,16 +8,18 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
 from core.analytics import analyze_daily_series
 from core.backtest import run_backtest
 from core.cache import (
+    StarsCache,
     default_stars_cache_path,
     load_stars_cache,
-    save_stars_cache,
+    save_stars_cache_object,
     stars_cache_is_fresh,
 )
 from core.date_utils import utc_midnight_ts, utc_now
@@ -27,7 +29,14 @@ from core.forecast import (
     parse_interval_levels,
     save_forecast,
 )
-from core.github_client import fetch_event_signals, fetch_stars
+from core.github_client import (
+    RepoMetadata,
+    StargazerPage,
+    fetch_event_signals,
+    fetch_repo_metadata,
+    fetch_stargazer_page,
+    fetch_stars,
+)
 from core.graphs import graph_advanced, graph_total_only
 from core.models import RepoRef
 from core.reporting import (
@@ -44,6 +53,10 @@ from core.series import (
 )
 
 DEFAULT_STARS_CACHE_TTL_HOURS = 6.0
+STARGAZERS_PER_PAGE = 100
+TAIL_SCAN_MAX_DELTA = 500
+TAIL_SCAN_OVERLAP_PAGES = 2
+TAIL_SCAN_MUTABLE_DAYS = 3
 
 
 class StarCacheError(RuntimeError):
@@ -55,6 +68,7 @@ class StarSeriesLoadResult:
     series: DailySeries
     source: str
     cache_path: Optional[Path]
+    detail: str = ""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,6 +96,177 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _page_number_from_url(url: str) -> Optional[int]:
+    values = parse_qs(urlparse(url).query).get("page")
+    if not values:
+        return None
+    try:
+        page = int(values[0])
+    except ValueError:
+        return None
+    return page if page > 0 else None
+
+
+def _last_page_from_count(count: int, per_page: int = STARGAZERS_PER_PAGE) -> int:
+    return max(1, math.ceil(count / per_page))
+
+
+def _dates_are_nondecreasing(dates: Sequence[dt.date]) -> bool:
+    return all(dates[idx - 1] <= dates[idx] for idx in range(1, len(dates)))
+
+
+def _cache_to_series(cache: StarsCache, now_utc: dt.datetime) -> DailySeries:
+    return series_from_daily_counts(cache.days, cache.counts, now_utc=now_utc)
+
+
+def _cache_from_counts(
+    *,
+    repo: RepoRef,
+    days: Sequence[dt.date],
+    counts: Sequence[int],
+    now_utc: dt.datetime,
+    full_scan_at_utc: dt.datetime,
+    current_stargazers_count: Optional[int] = None,
+    repo_etag: Optional[str] = None,
+) -> StarsCache:
+    return StarsCache(
+        repo=repo.full_name,
+        fetched_at_utc=now_utc,
+        checked_at_utc=now_utc,
+        full_scan_at_utc=full_scan_at_utc,
+        start_day=list(days)[0],
+        counts=list(counts),
+        current_stargazers_count=(
+            sum(counts)
+            if current_stargazers_count is None
+            else current_stargazers_count
+        ),
+        repo_etag=repo_etag,
+    )
+
+
+def _save_cache(cache_path: Path, repo: RepoRef, cache: StarsCache) -> None:
+    try:
+        save_stars_cache_object(cache_path, repo, cache)
+    except OSError as exc:
+        raise StarCacheError(f"Could not write stars cache: {exc}") from exc
+
+
+def _full_refresh_cache(
+    *,
+    repo: RepoRef,
+    token: Optional[str],
+    now_utc: dt.datetime,
+    fetcher: Callable[[RepoRef, Optional[str]], Sequence[dt.date]],
+    repo_etag: Optional[str] = None,
+) -> StarsCache:
+    star_dates = fetcher(repo, token)
+    days, counts = build_daily_counts(star_dates, end_day=now_utc.date())
+    return _cache_from_counts(
+        repo=repo,
+        days=days,
+        counts=counts,
+        now_utc=now_utc,
+        full_scan_at_utc=now_utc,
+        current_stargazers_count=sum(counts),
+        repo_etag=repo_etag,
+    )
+
+
+def _merge_tail_scan(
+    *,
+    cache: StarsCache,
+    repo: RepoRef,
+    now_utc: dt.datetime,
+    metadata: RepoMetadata,
+    pages: Sequence[StargazerPage],
+) -> Optional[StarsCache]:
+    if metadata.stargazers_count is None:
+        return None
+    if not pages:
+        return None
+
+    ordered_pages = sorted(pages, key=lambda page: page.page)
+    tail_dates = [day for page in ordered_pages for day in page.dates]
+    if not tail_dates:
+        return None
+    if not _dates_are_nondecreasing(tail_dates):
+        return None
+    if any(day > now_utc.date() for day in tail_dates):
+        return None
+
+    mutable_start = max(
+        cache.start_day,
+        cache.last_day - dt.timedelta(days=TAIL_SCAN_MUTABLE_DAYS),
+    )
+    if min(tail_dates) > mutable_start:
+        return None
+
+    tail_counter: dict[dt.date, int] = {}
+    for day in tail_dates:
+        if mutable_start <= day <= now_utc.date():
+            tail_counter[day] = tail_counter.get(day, 0) + 1
+
+    prefix_len = (mutable_start - cache.start_day).days
+    merged_counts = list(cache.counts[:prefix_len])
+    day = mutable_start
+    while day <= now_utc.date():
+        merged_counts.append(tail_counter.get(day, 0))
+        day += dt.timedelta(days=1)
+
+    if sum(merged_counts) != metadata.stargazers_count:
+        return None
+
+    return StarsCache(
+        repo=repo.full_name,
+        fetched_at_utc=now_utc,
+        checked_at_utc=now_utc,
+        full_scan_at_utc=cache.full_scan_at_utc,
+        start_day=cache.start_day,
+        counts=merged_counts,
+        current_stargazers_count=metadata.stargazers_count,
+        repo_etag=metadata.etag or cache.repo_etag,
+    )
+
+
+def _try_tail_refresh(
+    *,
+    cache: StarsCache,
+    repo: RepoRef,
+    token: Optional[str],
+    now_utc: dt.datetime,
+    metadata: RepoMetadata,
+    page_fetcher: Callable[[RepoRef, Optional[str], int], StargazerPage],
+) -> tuple[Optional[StarsCache], int]:
+    if metadata.stargazers_count is None:
+        return None, 0
+    delta = metadata.stargazers_count - cache.total_count
+    if delta <= 0 or delta > TAIL_SCAN_MAX_DELTA:
+        return None, 0
+
+    last_page = _last_page_from_count(metadata.stargazers_count)
+    pages_needed = math.ceil(delta / STARGAZERS_PER_PAGE) + TAIL_SCAN_OVERLAP_PAGES
+    first_page = max(1, last_page - pages_needed + 1)
+    pages: List[StargazerPage] = []
+    for page_number in range(last_page, first_page - 1, -1):
+        page = page_fetcher(repo, token, page_number)
+        pages.append(page)
+        last_link_page = _page_number_from_url(page.links.get("last", ""))
+        if last_link_page is not None and last_link_page != last_page:
+            return None, len(pages)
+        merged = _merge_tail_scan(
+            cache=cache,
+            repo=repo,
+            now_utc=now_utc,
+            metadata=metadata,
+            pages=pages,
+        )
+        if merged is not None:
+            return merged, len(pages)
+
+    return None, len(pages)
+
+
 def load_star_series(
     *,
     repo: RepoRef,
@@ -94,6 +279,12 @@ def load_star_series(
     offline_cache: bool,
     no_cache: bool,
     fetcher: Callable[[RepoRef, Optional[str]], Sequence[dt.date]] = fetch_stars,
+    repo_metadata_fetcher: Callable[
+        [RepoRef, Optional[str], Optional[str]], RepoMetadata
+    ] = fetch_repo_metadata,
+    stargazer_page_fetcher: Callable[
+        [RepoRef, Optional[str], int], StargazerPage
+    ] = fetch_stargazer_page,
 ) -> StarSeriesLoadResult:
     cache_path = (
         Path(stars_cache_path)
@@ -107,9 +298,11 @@ def load_star_series(
             series=build_daily_series(star_dates, now_utc=now_utc),
             source="api",
             cache_path=None,
+            detail="cache disabled",
         )
 
     cache_error: Optional[Exception] = None
+    cached: Optional[StarsCache] = None
     if not refresh_cache:
         try:
             cached = load_stars_cache(cache_path, repo, now_utc=now_utc)
@@ -126,6 +319,7 @@ def load_star_series(
                     ),
                     source="cache",
                     cache_path=cache_path,
+                    detail="offline cache" if offline_cache else "cache hit",
                 )
         except (FileNotFoundError, ValueError, OSError) as exc:
             cache_error = exc
@@ -135,16 +329,82 @@ def load_star_series(
             raise StarCacheError(f"Offline cache is unavailable: {cache_error}") from cache_error
         raise StarCacheError("Offline cache is stale and refresh is disabled")
 
-    star_dates = fetcher(repo, token)
-    days, counts = build_daily_counts(star_dates, end_day=now_utc.date())
-    try:
-        save_stars_cache(cache_path, repo, days, counts, fetched_at_utc=now_utc)
-    except OSError as exc:
-        raise StarCacheError(f"Could not write stars cache: {exc}") from exc
+    if cached is not None and not refresh_cache:
+        metadata = repo_metadata_fetcher(repo, token, cached.repo_etag)
+        if metadata.not_modified:
+            updated = cached.with_metadata(
+                checked_at_utc=now_utc,
+                current_stargazers_count=cached.current_stargazers_count,
+                repo_etag=metadata.etag or cached.repo_etag,
+            )
+            _save_cache(cache_path, repo, updated)
+            return StarSeriesLoadResult(
+                series=_cache_to_series(updated, now_utc),
+                source="cache",
+                cache_path=cache_path,
+                detail="repo metadata 304",
+            )
+        if metadata.stargazers_count == cached.total_count:
+            updated = cached.with_metadata(
+                checked_at_utc=now_utc,
+                current_stargazers_count=metadata.stargazers_count,
+                repo_etag=metadata.etag or cached.repo_etag,
+            )
+            _save_cache(cache_path, repo, updated)
+            return StarSeriesLoadResult(
+                series=_cache_to_series(updated, now_utc),
+                source="cache",
+                cache_path=cache_path,
+                detail="repo star count unchanged",
+            )
+        if (
+            metadata.stargazers_count is not None
+            and metadata.stargazers_count > cached.total_count
+        ):
+            tail_cache, pages_scanned = _try_tail_refresh(
+                cache=cached,
+                repo=repo,
+                token=token,
+                now_utc=now_utc,
+                metadata=metadata,
+                page_fetcher=stargazer_page_fetcher,
+            )
+            if tail_cache is not None:
+                _save_cache(cache_path, repo, tail_cache)
+                return StarSeriesLoadResult(
+                    series=_cache_to_series(tail_cache, now_utc),
+                    source="tail",
+                    cache_path=cache_path,
+                    detail=f"tail scan pages={pages_scanned}",
+                )
+
+        refreshed = _full_refresh_cache(
+            repo=repo,
+            token=token,
+            now_utc=now_utc,
+            fetcher=fetcher,
+            repo_etag=metadata.etag or cached.repo_etag,
+        )
+        _save_cache(cache_path, repo, refreshed)
+        return StarSeriesLoadResult(
+            series=_cache_to_series(refreshed, now_utc),
+            source="api",
+            cache_path=cache_path,
+            detail="full refresh",
+        )
+
+    refreshed = _full_refresh_cache(
+        repo=repo,
+        token=token,
+        now_utc=now_utc,
+        fetcher=fetcher,
+    )
+    _save_cache(cache_path, repo, refreshed)
     return StarSeriesLoadResult(
-        series=series_from_daily_counts(days, counts, now_utc=now_utc),
+        series=_cache_to_series(refreshed, now_utc),
         source="api",
         cache_path=cache_path,
+        detail="full refresh",
     )
 
 
@@ -202,9 +462,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         daily_series = stars.series
         if stars.source == "cache" and stars.cache_path is not None:
-            print(f"Using cached stars: {stars.cache_path}")
+            print(f"Using cached stars ({stars.detail}): {stars.cache_path}")
+        elif stars.source == "tail" and stars.cache_path is not None:
+            print(
+                f"Updated stars cache incrementally ({stars.detail}): "
+                f"{stars.cache_path}"
+            )
         elif stars.cache_path is not None:
-            print(f"Fetched stars from GitHub; cache saved: {stars.cache_path}")
+            print(
+                f"Fetched stars from GitHub ({stars.detail}); "
+                f"cache saved: {stars.cache_path}"
+            )
         else:
             print("Fetched stars from GitHub; cache disabled.")
         if stars.source == "api" and sum(daily_series.counts) == 0:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import collections
 import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -12,14 +13,34 @@ from core.features import EventSignals
 from core.models import RepoRef
 
 GITHUB_API = "https://api.github.com"
+GITHUB_JSON_ACCEPT = "application/vnd.github+json"
+GITHUB_STAR_ACCEPT = "application/vnd.github.star+json"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_EVENT_PAGES = 10
 DEFAULT_RELEASE_PAGE_LIMIT = 50
 _LINK_RE = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
 
 
-def gh_headers(token: Optional[str]) -> Dict[str, str]:
-    headers = {"Accept": "application/vnd.github.star+json"}
+@dataclass(frozen=True)
+class RepoMetadata:
+    stargazers_count: Optional[int]
+    etag: Optional[str]
+    not_modified: bool = False
+
+
+@dataclass(frozen=True)
+class StargazerPage:
+    page: int
+    dates: List[dt.date]
+    links: Dict[str, str]
+
+
+def gh_headers(
+    token: Optional[str],
+    *,
+    accept: str = GITHUB_JSON_ACCEPT,
+) -> Dict[str, str]:
+    headers = {"Accept": accept}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -45,21 +66,88 @@ def _get_json(
     return response.json(), response
 
 
-def fetch_stars(repo: RepoRef, token: Optional[str]) -> List[dt.date]:
+def _parse_stargazer_dates(payload: Any) -> List[dt.date]:
+    if not isinstance(payload, list):
+        raise ValueError("Unexpected GitHub API response format for stargazers")
+
+    dates: List[dt.date] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        starred_at = item.get("starred_at")
+        if starred_at:
+            dates.append(iso_to_date(starred_at))
+    return dates
+
+
+def fetch_repo_metadata(
+    repo: RepoRef,
+    token: Optional[str],
+    etag: Optional[str] = None,
+) -> RepoMetadata:
     headers = gh_headers(token)
+    if etag:
+        headers["If-None-Match"] = etag
+    url = f"{GITHUB_API}/repos/{repo.owner}/{repo.repo}"
+
+    with requests.Session() as session:
+        response = session.get(url, headers=headers, timeout=DEFAULT_TIMEOUT_SECONDS)
+        if response.status_code == 304:
+            return RepoMetadata(
+                stargazers_count=None,
+                etag=response.headers.get("ETag") or etag,
+                not_modified=True,
+            )
+        response.raise_for_status()
+        payload = response.json()
+
+    if not isinstance(payload, dict):
+        raise ValueError("Unexpected GitHub API response format for repository")
+    count = payload.get("stargazers_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("Repository response has invalid stargazers_count")
+    return RepoMetadata(
+        stargazers_count=count,
+        etag=response.headers.get("ETag"),
+        not_modified=False,
+    )
+
+
+def fetch_stargazer_page(
+    repo: RepoRef,
+    token: Optional[str],
+    page: int,
+    *,
+    per_page: int = 100,
+) -> StargazerPage:
+    if page <= 0:
+        raise ValueError("page must be > 0")
+    if per_page <= 0 or per_page > 100:
+        raise ValueError("per_page must be in [1, 100]")
+
+    headers = gh_headers(token, accept=GITHUB_STAR_ACCEPT)
+    url = (
+        f"{GITHUB_API}/repos/{repo.owner}/{repo.repo}/stargazers"
+        f"?per_page={per_page}&page={page}"
+    )
+    with requests.Session() as session:
+        payload, response = _get_json(session, url, headers)
+    return StargazerPage(
+        page=page,
+        dates=_parse_stargazer_dates(payload),
+        links=parse_link_header(response.headers.get("Link")),
+    )
+
+
+def fetch_stars(repo: RepoRef, token: Optional[str]) -> List[dt.date]:
+    headers = gh_headers(token, accept=GITHUB_STAR_ACCEPT)
     url = f"{GITHUB_API}/repos/{repo.owner}/{repo.repo}/stargazers?per_page=100"
     dates: List[dt.date] = []
 
     with requests.Session() as session:
         while url:
             payload, response = _get_json(session, url, headers)
-            if not isinstance(payload, list):
-                raise ValueError("Unexpected GitHub API response format for stargazers")
-
-            for item in payload:
-                starred_at = item.get("starred_at")
-                if starred_at:
-                    dates.append(iso_to_date(starred_at))
+            dates.extend(_parse_stargazer_dates(payload))
 
             url = parse_link_header(response.headers.get("Link")).get("next")
 
